@@ -1,7 +1,7 @@
 import logging
 from telegram import Update, ChatPermissions
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
-from telegram.error import BadRequest, InvalidToken
+from telegram.error import BadRequest, InvalidToken, Forbidden
 import json
 import os
 import asyncio
@@ -10,13 +10,13 @@ from datetime import datetime, timedelta
 # Configure logging with more detailed output
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG  # Changed to DEBUG for more detailed logs
+    level=logging.DEBUG
 )
 logger = logging.getLogger(__name__)
 
 class TopicKeywordBot:
     def __init__(self, token):
-        self.token = token.strip()  # Remove any whitespace
+        self.token = token.strip()
         self.app = Application.builder().token(self.token).build()
         self.setup_handlers()
         self.config_file = "bot_config.json"
@@ -30,7 +30,7 @@ class TopicKeywordBot:
             self.config = {
                 "topic_keywords": {},
                 "admin_users": [],
-                "muted_users": {}  # Store muted users with unmute timestamps
+                "muted_users": {}
             }
             self.save_config()
 
@@ -50,9 +50,37 @@ class TopicKeywordBot:
         self.app.add_handler(CommandHandler("remove_admin", self.remove_admin_command))
         self.app.add_handler(CommandHandler("unmute", self.unmute_command))
         self.app.add_handler(CommandHandler("check_mutes", self.check_mutes_command))
-        self.app.add_handler(CommandHandler("debug", self.debug_command))  # Added debug command
-        # Changed filter priority - put it at the end
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.filter_message))
+        self.app.add_handler(CommandHandler("debug", self.debug_command))
+        self.app.add_handler(CommandHandler("test_permissions", self.test_permissions_command))
+        # Message filter handler - highest priority
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.filter_message), group=0)
+
+    async def test_permissions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Test bot permissions in current chat"""
+        if not self.is_bot_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Only bot admins can test permissions.")
+            return
+
+        try:
+            bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+            
+            permissions_text = f"""
+🔍 <b>Bot Permissions Test:</b>
+
+<b>Status:</b> {bot_member.status}
+<b>Can Delete Messages:</b> {getattr(bot_member, 'can_delete_messages', 'Unknown')}
+<b>Can Restrict Members:</b> {getattr(bot_member, 'can_restrict_members', 'Unknown')}
+<b>Can Manage Topics:</b> {getattr(bot_member, 'can_manage_topics', 'Unknown')}
+
+<b>Chat Type:</b> {update.effective_chat.type}
+<b>Chat ID:</b> {update.effective_chat.id}
+<b>Thread ID:</b> {update.message.message_thread_id or 'None (General chat)'}
+            """
+            
+            await update.message.reply_text(permissions_text, parse_mode="HTML")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error checking permissions: {e}")
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
@@ -67,8 +95,8 @@ class TopicKeywordBot:
 🤖 <b>Topic Keyword Filter Bot Commands:</b>
 
 <b>For Admins:</b>
-• /add_keyword &lt;topic_id&gt; &lt;keyword&gt; - Add a keyword to filter (use 0 for general chat)
-• /remove_keyword &lt;topic_id&gt; &lt;keyword&gt; - Remove a keyword (use 0 for general chat)
+• /add_keyword &lt;topic_id&gt; &lt;keyword&gt; - Add a keyword to filter
+• /remove_keyword &lt;topic_id&gt; &lt;keyword&gt; - Remove a keyword
 • /list_keywords [topic_id] - List keywords (all or specific topic/chat)
 • /add_admin &lt;user_id&gt; - Add a user as bot admin
 • /forceaddadmin &lt;user_id&gt; - Forcefully add admin (restricted access)
@@ -77,6 +105,7 @@ class TopicKeywordBot:
 • /unmute &lt;user_id&gt; - Manually unmute a user
 • /check_mutes - Check currently muted users
 • /debug - Show debug information about current chat
+• /test_permissions - Test bot permissions
 
 <b>Features:</b>
 • Regular users get muted for 6 hours when using filtered keywords
@@ -86,8 +115,8 @@ class TopicKeywordBot:
 <b>Notes:</b>
 • Bot must be admin with delete and restrict permissions
 • Keywords are case-insensitive
-• Use topic_id 0 for general chat, actual topic ID for topics
-• Get topic ID from Telegram topic URL
+• For supergroups with topics: use topic ID from URL or /debug
+• For general chat in supergroups: often topic ID 1 or use /debug to confirm
         """
         await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -99,27 +128,36 @@ class TopicKeywordBot:
 
         chat_id = str(update.effective_chat.id)
         message_thread_id = update.message.message_thread_id
-        topic_id = "0" if message_thread_id is None else str(message_thread_id)
+        
+        # For supergroups, general chat usually has thread_id = 1, not None
+        if update.effective_chat.type == 'supergroup':
+            topic_id = str(message_thread_id) if message_thread_id else "1"
+        else:
+            topic_id = "0" if message_thread_id is None else str(message_thread_id)
         
         # Check bot permissions
         try:
             bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
-            can_delete = bot_member.can_delete_messages
-            can_restrict = bot_member.can_restrict_members
+            can_delete = getattr(bot_member, 'can_delete_messages', False)
+            can_restrict = getattr(bot_member, 'can_restrict_members', False)
+            bot_status = bot_member.status
         except Exception as e:
-            can_delete = "Unknown"
-            can_restrict = "Unknown"
+            can_delete = "Error checking"
+            can_restrict = "Error checking"
+            bot_status = "Unknown"
             logger.error(f"Error checking bot permissions: {e}")
 
         debug_info = f"""
 🔍 <b>Debug Information:</b>
 
 <b>Chat Info:</b>
+• Chat Type: {update.effective_chat.type}
 • Chat ID: {chat_id}
-• Topic ID: {topic_id}
-• Message Thread ID: {message_thread_id}
+• Raw Thread ID: {message_thread_id}
+• Detected Topic ID: {topic_id}
 
-<b>Bot Permissions:</b>
+<b>Bot Status:</b>
+• Status: {bot_status}
 • Can Delete Messages: {can_delete}
 • Can Restrict Users: {can_restrict}
 
@@ -157,28 +195,27 @@ class TopicKeywordBot:
             return
 
         if len(context.args) < 2:
-            await update.message.reply_text("❌ Usage: /add_keyword <topic_id> <keyword>\nUse topic_id 0 for general chat, or actual topic ID for topics")
+            await update.message.reply_text("❌ Usage: /add_keyword <topic_id> <keyword>\nUse /debug to find the correct topic ID")
             return
 
         try:
-            topic_id = int(context.args[0])
+            topic_id = context.args[0]  # Keep as string to handle both numeric and non-numeric IDs
             keyword = " ".join(context.args[1:]).lower()
             chat_id = str(update.effective_chat.id)
 
             self.config["topic_keywords"].setdefault(chat_id, {})
-            self.config["topic_keywords"][chat_id].setdefault(str(topic_id), [])
+            self.config["topic_keywords"][chat_id].setdefault(topic_id, [])
 
-            if keyword not in self.config["topic_keywords"][chat_id][str(topic_id)]:
-                self.config["topic_keywords"][chat_id][str(topic_id)].append(keyword)
+            if keyword not in self.config["topic_keywords"][chat_id][topic_id]:
+                self.config["topic_keywords"][chat_id][topic_id].append(keyword)
                 self.save_config()
                 
-                location = "general chat" if topic_id == 0 else f"topic {topic_id}"
-                await update.message.reply_text(f"✅ Added keyword '{keyword}' to {location}.")
-                logger.info(f"Added keyword '{keyword}' to {location} in chat {chat_id}")
+                await update.message.reply_text(f"✅ Added keyword '{keyword}' to topic {topic_id}.")
+                logger.info(f"Added keyword '{keyword}' to topic {topic_id} in chat {chat_id}")
             else:
                 await update.message.reply_text(f"⚠️ Keyword '{keyword}' already exists.")
-        except ValueError:
-            await update.message.reply_text("❌ Topic ID must be a number.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error adding keyword: {e}")
 
     async def remove_keyword_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.is_bot_admin(update.effective_user.id):
@@ -186,28 +223,25 @@ class TopicKeywordBot:
             return
 
         if len(context.args) < 2:
-            await update.message.reply_text("❌ Usage: /remove_keyword <topic_id> <keyword>\nUse topic_id 0 for general chat, or actual topic ID for topics")
+            await update.message.reply_text("❌ Usage: /remove_keyword <topic_id> <keyword>")
             return
 
         try:
-            topic_id = int(context.args[0])
+            topic_id = context.args[0]
             keyword = " ".join(context.args[1:]).lower()
             chat_id = str(update.effective_chat.id)
 
             if (chat_id in self.config["topic_keywords"] and 
-                str(topic_id) in self.config["topic_keywords"][chat_id] and
-                keyword in self.config["topic_keywords"][chat_id][str(topic_id)]):
+                topic_id in self.config["topic_keywords"][chat_id] and
+                keyword in self.config["topic_keywords"][chat_id][topic_id]):
                 
-                self.config["topic_keywords"][chat_id][str(topic_id)].remove(keyword)
+                self.config["topic_keywords"][chat_id][topic_id].remove(keyword)
                 self.save_config()
-                
-                location = "general chat" if topic_id == 0 else f"topic {topic_id}"
-                await update.message.reply_text(f"✅ Removed keyword '{keyword}' from {location}.")
+                await update.message.reply_text(f"✅ Removed keyword '{keyword}' from topic {topic_id}.")
             else:
-                location = "general chat" if topic_id == 0 else f"topic {topic_id}"
-                await update.message.reply_text(f"❌ Keyword '{keyword}' not found in {location}.")
-        except ValueError:
-            await update.message.reply_text("❌ Topic ID must be a number.")
+                await update.message.reply_text(f"❌ Keyword '{keyword}' not found in topic {topic_id}.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error removing keyword: {e}")
 
     async def list_keywords_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.is_bot_admin(update.effective_user.id):
@@ -221,23 +255,19 @@ class TopicKeywordBot:
             return
 
         if context.args:
-            try:
-                topic_id = str(int(context.args[0]))
-                keywords = self.config["topic_keywords"][chat_id].get(topic_id, [])
-                if keywords:
-                    keyword_list = "\n".join([f"• {kw}" for kw in keywords])
-                    await update.message.reply_text(f"🔍 <b>Keywords for topic {topic_id}:</b>\n{keyword_list}", parse_mode="HTML")
-                else:
-                    await update.message.reply_text(f"❌ No keywords found for topic {topic_id}.")
-            except ValueError:
-                await update.message.reply_text("❌ Topic ID must be a number.")
+            topic_id = context.args[0]
+            keywords = self.config["topic_keywords"][chat_id].get(topic_id, [])
+            if keywords:
+                keyword_list = "\n".join([f"• {kw}" for kw in keywords])
+                await update.message.reply_text(f"🔍 <b>Keywords for topic {topic_id}:</b>\n{keyword_list}", parse_mode="HTML")
+            else:
+                await update.message.reply_text(f"❌ No keywords found for topic {topic_id}.")
         else:
             response = "🔍 <b>All Keywords:</b>\n\n"
             for topic_id, keywords in self.config["topic_keywords"][chat_id].items():
                 if keywords:
                     keyword_list = ", ".join(keywords)
-                    location = "General Chat" if topic_id == "0" else f"Topic {topic_id}"
-                    response += f"<b>{location}:</b> {keyword_list}\n"
+                    response += f"<b>Topic {topic_id}:</b> {keyword_list}\n"
             
             if response == "🔍 <b>All Keywords:</b>\n\n":
                 response = "❌ No keywords configured."
@@ -265,7 +295,6 @@ class TopicKeywordBot:
             await update.message.reply_text("❌ User ID must be a number.")
 
     async def force_add_admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Only allow specific user ID to use this command
         if update.effective_user.id != 5199331612:
             await update.message.reply_text("❌ You are not authorized to use this command.")
             return
@@ -336,7 +365,7 @@ class TopicKeywordBot:
                 del self.config["muted_users"][mute_key]
                 self.save_config()
             
-            # Restore permissions
+            # Restore full permissions
             await context.bot.restrict_chat_member(
                 chat_id=update.effective_chat.id,
                 user_id=user_id,
@@ -346,9 +375,10 @@ class TopicKeywordBot:
                     can_send_polls=True,
                     can_send_other_messages=True,
                     can_add_web_page_previews=True,
-                    can_change_info=False,
-                    can_invite_users=False,
-                    can_pin_messages=False
+                    can_change_info=True,
+                    can_invite_users=True,
+                    can_pin_messages=True,
+                    can_manage_topics=True
                 )
             )
             
@@ -356,8 +386,9 @@ class TopicKeywordBot:
             
         except ValueError:
             await update.message.reply_text("❌ User ID must be a number.")
-        except BadRequest as e:
+        except (BadRequest, Forbidden) as e:
             await update.message.reply_text(f"❌ Failed to unmute user: {e}")
+            logger.error(f"Failed to unmute user {user_id}: {e}")
 
     async def check_mutes_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.is_bot_admin(update.effective_user.id):
@@ -375,8 +406,29 @@ class TopicKeywordBot:
                 if current_time >= unmute_time:
                     expired_mutes.append(mute_key)
         
-        # Remove expired mutes
+        # Remove expired mutes and auto-unmute
         for mute_key in expired_mutes:
+            user_id = int(mute_key.split("_")[1])
+            try:
+                await context.bot.restrict_chat_member(
+                    chat_id=update.effective_chat.id,
+                    user_id=user_id,
+                    permissions=ChatPermissions(
+                        can_send_messages=True,
+                        can_send_media_messages=True,
+                        can_send_polls=True,
+                        can_send_other_messages=True,
+                        can_add_web_page_previews=True,
+                        can_change_info=True,
+                        can_invite_users=True,
+                        can_pin_messages=True,
+                        can_manage_topics=True
+                    )
+                )
+                logger.info(f"Auto-unmuted expired mute for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to auto-unmute user {user_id}: {e}")
+            
             del self.config["muted_users"][mute_key]
         
         if expired_mutes:
@@ -404,7 +456,10 @@ class TopicKeywordBot:
     async def mute_user(self, chat_id: int, user_id: int, keyword: str, context: ContextTypes.DEFAULT_TYPE):
         """Mute a user for 6 hours"""
         try:
-            # Mute the user
+            # Calculate unmute time
+            unmute_time = datetime.now() + timedelta(hours=6)
+            
+            # Mute the user with restricted permissions
             await context.bot.restrict_chat_member(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -416,28 +471,37 @@ class TopicKeywordBot:
                     can_add_web_page_previews=False,
                     can_change_info=False,
                     can_invite_users=False,
-                    can_pin_messages=False
+                    can_pin_messages=False,
+                    can_manage_topics=False
                 ),
-                until_date=datetime.now() + timedelta(hours=6)
+                until_date=unmute_time
             )
             
             # Store mute info
             mute_key = f"{chat_id}_{user_id}"
-            unmute_time = datetime.now() + timedelta(hours=6)
             self.config.setdefault("muted_users", {})[mute_key] = unmute_time.isoformat()
             self.save_config()
             
             # Send notification with user mention
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"🔇 <a href='tg://user?id={user_id}'>User</a> has been muted for 6 hours for using \"{keyword}\" in this topic.",
+                text=f"🔇 <a href='tg://user?id={user_id}'>User</a> has been muted for 6 hours for using prohibited keyword.",
                 parse_mode="HTML"
             )
             
-            logger.info(f"Muted user {user_id} for keyword '{keyword}' until {unmute_time}")
+            logger.info(f"Successfully muted user {user_id} for keyword '{keyword}' until {unmute_time}")
             
-        except BadRequest as e:
+        except (BadRequest, Forbidden) as e:
             logger.error(f"Failed to mute user {user_id}: {e}")
+            # Try to send a notification about the failed mute
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Could not mute user due to insufficient permissions. Please ensure bot has 'Restrict Members' permission.",
+                    parse_mode="HTML"
+                )
+            except:
+                pass
 
     async def filter_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
@@ -447,19 +511,26 @@ class TopicKeywordBot:
         message_thread_id = update.message.message_thread_id
         user_id = update.effective_user.id
         
-        # Determine the topic ID (0 for general chat, actual ID for topics)
-        topic_id = "0" if message_thread_id is None else str(message_thread_id)
+        # Determine the topic ID based on chat type
+        if update.effective_chat.type == 'supergroup':
+            # For supergroups with topics, general chat usually has thread_id = 1
+            # If message_thread_id is None, it might be general chat (topic 1)
+            # If message_thread_id has a value, it's a specific topic
+            topic_id = str(message_thread_id) if message_thread_id else "1"
+        else:
+            # For regular groups
+            topic_id = "0" if message_thread_id is None else str(message_thread_id)
         
-        logger.debug(f"Processing message in chat {chat_id}, topic {topic_id}, from user {user_id}")
+        logger.debug(f"Processing message in chat {chat_id} (type: {update.effective_chat.type}), topic {topic_id}, from user {user_id}")
         
         # Check if this topic/chat has keywords to filter
         topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
         
-        logger.debug(f"Keywords for this location: {topic_keywords}")
+        logger.debug(f"Keywords for topic {topic_id}: {topic_keywords}")
         
         if not topic_keywords:
             logger.debug("No keywords configured for this location")
-            return  # No keywords configured for this topic/chat
+            return
 
         message_text = update.message.text.lower()
         logger.debug(f"Checking message: '{message_text}'")
@@ -468,23 +539,30 @@ class TopicKeywordBot:
         for keyword in topic_keywords:
             if keyword in message_text:
                 logger.info(f"Keyword '{keyword}' found in message from user {user_id}")
+                
+                # Check if user is bot admin or telegram admin
+                is_bot_admin = self.is_bot_admin(user_id)
+                is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
+                
                 try:
-                    # Always delete the message
+                    # Always try to delete the message first
                     await context.bot.delete_message(
                         chat_id=update.effective_chat.id,
                         message_id=update.message.message_id
                     )
-                    logger.info(f"Deleted message containing keyword '{keyword}'")
-                    
-                    # Check if user is bot admin or telegram admin
-                    is_bot_admin = self.is_bot_admin(user_id)
-                    is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
-                    
-                    location = "general chat" if topic_id == "0" else f"topic {topic_id}"
+                    logger.info(f"Successfully deleted message containing keyword '{keyword}'")
                     
                     if is_bot_admin or is_tg_admin:
                         # Only delete message for admins, no mute
                         logger.info(f"Admin message deleted - no mute applied for user {user_id}")
+                        try:
+                            await context.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text=f"🗑️ Admin message containing prohibited keyword was deleted.",
+                                parse_mode="HTML"
+                            )
+                        except:
+                            pass
                     else:
                         # Mute regular users
                         await self.mute_user(update.effective_chat.id, user_id, keyword, context)
@@ -492,14 +570,17 @@ class TopicKeywordBot:
                     
                     return
                     
-                except BadRequest as e:
+                except (BadRequest, Forbidden) as e:
                     logger.error(f"Failed to delete message: {e}")
-                    # If we can't delete, let's check bot permissions
+                    # Send a warning about insufficient permissions
                     try:
-                        bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
-                        logger.error(f"Bot permissions - can_delete_messages: {getattr(bot_member, 'can_delete_messages', 'Unknown')}")
-                    except Exception as perm_error:
-                        logger.error(f"Could not check bot permissions: {perm_error}")
+                        await context.bot.send_message(
+                            chat_id=update.effective_chat.id,
+                            text=f"⚠️ Detected prohibited keyword but couldn't delete message. Please ensure bot has 'Delete Messages' permission.",
+                            parse_mode="HTML"
+                        )
+                    except:
+                        pass
                     return
 
     async def test_token(self):
