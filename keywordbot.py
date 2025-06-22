@@ -110,6 +110,7 @@ class TopicKeywordBot:
 <b>Features:</b>
 • Regular users get muted for 6 hours when using filtered keywords
 • Bot admins only get their messages deleted (no mute)
+• Bots get their messages deleted silently (no notifications or muting)
 • Automatic unmuting after 6 hours
 
 <b>Notes:</b>
@@ -482,10 +483,10 @@ class TopicKeywordBot:
             self.config.setdefault("muted_users", {})[mute_key] = unmute_time.isoformat()
             self.save_config()
             
-            # Send notification with user mention
+            # Send notification with user mention and specific keyword
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"🔇 <a href='tg://user?id={user_id}'>User</a> has been muted for 6 hours for using prohibited keyword.",
+                text=f"🔇 <a href='tg://user?id={user_id}'>User</a> has been muted for 6 hours for using prohibited keyword: <b>{keyword}</b>",
                 parse_mode="HTML"
             )
             
@@ -540,48 +541,66 @@ class TopicKeywordBot:
             if keyword in message_text:
                 logger.info(f"Keyword '{keyword}' found in message from user {user_id}")
                 
+                # Check if sender is a bot
+                is_bot = update.effective_user.is_bot
+                
                 # Check if user is bot admin or telegram admin
                 is_bot_admin = self.is_bot_admin(user_id)
                 is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
                 
-                try:
-                    # Always try to delete the message first
-                    await context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=update.message.message_id
-                    )
-                    logger.info(f"Successfully deleted message containing keyword '{keyword}'")
-                    
-                    if is_bot_admin or is_tg_admin:
-                        # Only delete message for admins, no mute
-                        logger.info(f"Admin message deleted - no mute applied for user {user_id}")
-                        try:
-                            await context.bot.send_message(
-                                chat_id=update.effective_chat.id,
-                                text=f"🗑️ Admin message containing prohibited keyword was deleted.",
-                                parse_mode="HTML"
-                            )
-                        except:
-                            pass
-                    else:
-                        # Mute regular users
-                        await self.mute_user(update.effective_chat.id, user_id, keyword, context)
-                        logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
-                    
-                    return
-                    
-                except (BadRequest, Forbidden) as e:
-                    logger.error(f"Failed to delete message: {e}")
-                    # Send a warning about insufficient permissions
+                if is_bot:
+                    # If sender is a bot, only delete the message silently
+                    logger.info(f"Bot {user_id} used prohibited keyword '{keyword}' - deleting message silently")
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=update.effective_chat.id,
+                            message_id=update.message.message_id
+                        )
+                        logger.info(f"Successfully deleted bot message containing keyword '{keyword}'")
+                        return
+                    except (BadRequest, Forbidden) as e:
+                        logger.error(f"Failed to delete bot message: {e}")
+                        return
+                        
+                elif is_bot_admin or is_tg_admin:
+                    # Don't delete admin messages, just warn
+                    logger.info(f"Admin used prohibited keyword '{keyword}' - message not deleted")
                     try:
                         await context.bot.send_message(
                             chat_id=update.effective_chat.id,
-                            text=f"⚠️ Detected prohibited keyword but couldn't delete message. Please ensure bot has 'Delete Messages' permission.",
+                            text=f"⚠️ Admin used prohibited keyword: <b>{keyword}</b>",
                             parse_mode="HTML"
                         )
                     except:
                         pass
                     return
+                else:
+                    # Delete message and mute regular users
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=update.effective_chat.id,
+                            message_id=update.message.message_id
+                        )
+                        logger.info(f"Successfully deleted message containing keyword '{keyword}'")
+                        
+                        # Mute regular users
+                        await self.mute_user(update.effective_chat.id, user_id, keyword, context)
+                        logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
+                        
+                        return
+                        
+                    except (BadRequest, Forbidden) as e:
+                        logger.error(f"Failed to delete message: {e}")
+                        # Send a warning about insufficient permissions
+                        try:
+                            await context.bot.send_message(
+                                chat_id=update.effective_chat.id,
+                                text=f"⚠️ Detected prohibited keyword but couldn't delete message. Please ensure bot has 'Delete Messages' permission.",
+                                parse_mode="HTML"
+                            )
+                        except:
+                            pass
+                        return
 
     async def test_token(self):
         """Test if the bot token is valid"""
