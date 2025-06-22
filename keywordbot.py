@@ -109,8 +109,8 @@ class TopicKeywordBot:
 
 <b>Features:</b>
 • Regular users get muted for 6 hours when using filtered keywords
-• Bot admins only get their messages deleted (no mute)
-• Bots get their messages deleted silently (no notifications or muting)
+• Bot admins: no restrictions applied (messages not deleted)
+• Telegram admins: messages deleted silently (no notifications)
 • Automatic unmuting after 6 hours
 
 <b>Notes:</b>
@@ -541,41 +541,29 @@ class TopicKeywordBot:
             if keyword in message_text:
                 logger.info(f"Keyword '{keyword}' found in message from user {user_id}")
                 
-                # Check if sender is a bot
-                is_bot = update.effective_user.is_bot
-                
                 # Check if user is bot admin or telegram admin
                 is_bot_admin = self.is_bot_admin(user_id)
                 is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
                 
-                if is_bot:
-                    # If sender is a bot, only delete the message silently
-                    logger.info(f"Bot {user_id} used prohibited keyword '{keyword}' - deleting message silently")
+                if is_bot_admin:
+                    # Bot admins: no restrictions applied (don't delete message, don't mute, no notification)
+                    logger.info(f"Bot admin {user_id} used prohibited keyword '{keyword}' - no action taken")
+                    return
+                elif is_tg_admin:
+                    # Telegram admins: delete message silently (no notification, no mute)
+                    logger.info(f"Telegram admin {user_id} used prohibited keyword '{keyword}' - deleting message silently")
                     try:
                         await context.bot.delete_message(
                             chat_id=update.effective_chat.id,
                             message_id=update.message.message_id
                         )
-                        logger.info(f"Successfully deleted bot message containing keyword '{keyword}'")
+                        logger.info(f"Successfully deleted Telegram admin message containing keyword '{keyword}'")
                         return
                     except (BadRequest, Forbidden) as e:
-                        logger.error(f"Failed to delete bot message: {e}")
+                        logger.error(f"Failed to delete Telegram admin message: {e}")
                         return
-                        
-                elif is_bot_admin or is_tg_admin:
-                    # Don't delete admin messages, just warn
-                    logger.info(f"Admin used prohibited keyword '{keyword}' - message not deleted")
-                    try:
-                        await context.bot.send_message(
-                            chat_id=update.effective_chat.id,
-                            text=f"⚠️ Admin used prohibited keyword: <b>{keyword}</b>",
-                            parse_mode="HTML"
-                        )
-                    except:
-                        pass
-                    return
                 else:
-                    # Delete message and mute regular users
+                    # Regular users: delete message and mute with notification
                     try:
                         await context.bot.delete_message(
                             chat_id=update.effective_chat.id,
@@ -652,23 +640,17 @@ def main():
         token = input("Please enter your bot token: ").strip()
     
     if not token:
-        print("❌ No bot token provided!")
+        print("❌ No bot token provided! Exiting...")
         return
     
-    # Validate token format
-    if ':' not in token:
-        print("❌ Invalid token format! Token should be in format: 'XXXXXXXXX:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'")
-        return
-    
-    bot = TopicKeywordBot(token)
-    
-    # Clear any existing webhooks that might cause conflicts
     try:
-        asyncio.get_event_loop().run_until_complete(bot.clear_webhook())
+        bot = TopicKeywordBot(token)
+        bot.run()
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped by user")
     except Exception as e:
-        print(f"Warning: Could not clear webhook: {e}")
-    
-    bot.run()
+        print(f"❌ Unexpected error: {e}")
+        logger.error(f"Unexpected error in main: {e}")
 
 if __name__ == "__main__":
     main()
