@@ -53,7 +53,7 @@ class TopicKeywordBot:
         self.app.add_handler(CommandHandler("debug", self.debug_command))
         self.app.add_handler(CommandHandler("test_permissions", self.test_permissions_command))
         # Message filter handler - highest priority
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.filter_message), group=0)
+        self.app.add_handler(MessageHandler(filters.TEXT, self.filter_message), group=0)
 
     async def test_permissions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Test bot permissions in current chat"""
