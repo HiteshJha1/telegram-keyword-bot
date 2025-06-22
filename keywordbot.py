@@ -7,10 +7,10 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 
-# Configure logging
+# Configure logging with more detailed output
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.DEBUG  # Changed to DEBUG for more detailed logs
 )
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,8 @@ class TopicKeywordBot:
         self.app.add_handler(CommandHandler("remove_admin", self.remove_admin_command))
         self.app.add_handler(CommandHandler("unmute", self.unmute_command))
         self.app.add_handler(CommandHandler("check_mutes", self.check_mutes_command))
+        self.app.add_handler(CommandHandler("debug", self.debug_command))  # Added debug command
+        # Changed filter priority - put it at the end
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.filter_message))
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,6 +76,7 @@ class TopicKeywordBot:
 • /remove_admin &lt;user_id&gt; - Remove admin
 • /unmute &lt;user_id&gt; - Manually unmute a user
 • /check_mutes - Check currently muted users
+• /debug - Show debug information about current chat
 
 <b>Features:</b>
 • Regular users get muted for 6 hours when using filtered keywords
@@ -87,6 +90,53 @@ class TopicKeywordBot:
 • Get topic ID from Telegram topic URL
         """
         await update.message.reply_text(help_text, parse_mode="HTML")
+
+    async def debug_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Debug command to show current chat information"""
+        if not self.is_bot_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Only bot admins can use debug command.")
+            return
+
+        chat_id = str(update.effective_chat.id)
+        message_thread_id = update.message.message_thread_id
+        topic_id = "0" if message_thread_id is None else str(message_thread_id)
+        
+        # Check bot permissions
+        try:
+            bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+            can_delete = bot_member.can_delete_messages
+            can_restrict = bot_member.can_restrict_members
+        except Exception as e:
+            can_delete = "Unknown"
+            can_restrict = "Unknown"
+            logger.error(f"Error checking bot permissions: {e}")
+
+        debug_info = f"""
+🔍 <b>Debug Information:</b>
+
+<b>Chat Info:</b>
+• Chat ID: {chat_id}
+• Topic ID: {topic_id}
+• Message Thread ID: {message_thread_id}
+
+<b>Bot Permissions:</b>
+• Can Delete Messages: {can_delete}
+• Can Restrict Users: {can_restrict}
+
+<b>Keywords for this location:</b>
+        """
+        
+        topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
+        if topic_keywords:
+            keyword_list = "\n".join([f"• {kw}" for kw in topic_keywords])
+            debug_info += f"\n{keyword_list}"
+        else:
+            debug_info += "\n• No keywords configured"
+
+        debug_info += f"\n\n<b>Your User ID:</b> {update.effective_user.id}"
+        debug_info += f"\n<b>Are you bot admin?:</b> {self.is_bot_admin(update.effective_user.id)}"
+        
+        await update.message.reply_text(debug_info, parse_mode="HTML")
 
     async def is_telegram_admin(self, user_id: int, chat_id: int) -> bool:
         """Check if user is a Telegram chat admin"""
@@ -124,6 +174,7 @@ class TopicKeywordBot:
                 
                 location = "general chat" if topic_id == 0 else f"topic {topic_id}"
                 await update.message.reply_text(f"✅ Added keyword '{keyword}' to {location}.")
+                logger.info(f"Added keyword '{keyword}' to {location} in chat {chat_id}")
             else:
                 await update.message.reply_text(f"⚠️ Keyword '{keyword}' already exists.")
         except ValueError:
@@ -399,23 +450,31 @@ class TopicKeywordBot:
         # Determine the topic ID (0 for general chat, actual ID for topics)
         topic_id = "0" if message_thread_id is None else str(message_thread_id)
         
+        logger.debug(f"Processing message in chat {chat_id}, topic {topic_id}, from user {user_id}")
+        
         # Check if this topic/chat has keywords to filter
         topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
         
+        logger.debug(f"Keywords for this location: {topic_keywords}")
+        
         if not topic_keywords:
+            logger.debug("No keywords configured for this location")
             return  # No keywords configured for this topic/chat
 
         message_text = update.message.text.lower()
+        logger.debug(f"Checking message: '{message_text}'")
         
         # Check if message contains any filtered keywords
         for keyword in topic_keywords:
             if keyword in message_text:
+                logger.info(f"Keyword '{keyword}' found in message from user {user_id}")
                 try:
                     # Always delete the message
                     await context.bot.delete_message(
                         chat_id=update.effective_chat.id,
                         message_id=update.message.message_id
                     )
+                    logger.info(f"Deleted message containing keyword '{keyword}'")
                     
                     # Check if user is bot admin or telegram admin
                     is_bot_admin = self.is_bot_admin(user_id)
@@ -425,16 +484,22 @@ class TopicKeywordBot:
                     
                     if is_bot_admin or is_tg_admin:
                         # Only delete message for admins, no mute
-                        logger.info(f"Deleted admin message containing keyword '{keyword}' in {location}")
+                        logger.info(f"Admin message deleted - no mute applied for user {user_id}")
                     else:
                         # Mute regular users
                         await self.mute_user(update.effective_chat.id, user_id, keyword, context)
-                        logger.info(f"Deleted and muted user {user_id} for keyword '{keyword}' in {location}")
+                        logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
                     
                     return
                     
                 except BadRequest as e:
                     logger.error(f"Failed to delete message: {e}")
+                    # If we can't delete, let's check bot permissions
+                    try:
+                        bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+                        logger.error(f"Bot permissions - can_delete_messages: {getattr(bot_member, 'can_delete_messages', 'Unknown')}")
+                    except Exception as perm_error:
+                        logger.error(f"Could not check bot permissions: {perm_error}")
                     return
 
     async def test_token(self):
@@ -454,13 +519,30 @@ class TopicKeywordBot:
         """Run the bot with proper error handling"""
         try:
             print("🚀 Starting bot...")
-            self.app.run_polling(drop_pending_updates=True)
+            # Test token before running
+            asyncio.get_event_loop().run_until_complete(self.test_token())
+            
+            # Clear any pending updates and conflicts
+            print("🔄 Clearing pending updates...")
+            self.app.run_polling(
+                drop_pending_updates=True,
+                close_loop=False,
+                stop_signals=None
+            )
             
         except InvalidToken:
             print("❌ Invalid bot token! Please check your token.")
         except Exception as e:
             logger.error(f"Error running bot: {e}")
             print(f"❌ Error running bot: {e}")
+            
+    async def clear_webhook(self):
+        """Clear any existing webhook to avoid conflicts"""
+        try:
+            await self.app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Cleared existing webhook")
+        except Exception as e:
+            logger.error(f"Error clearing webhook: {e}")
 
 def main():
     # Get token from environment variable or input
@@ -479,6 +561,13 @@ def main():
         return
     
     bot = TopicKeywordBot(token)
+    
+    # Clear any existing webhooks that might cause conflicts
+    try:
+        asyncio.get_event_loop().run_until_complete(bot.clear_webhook())
+    except Exception as e:
+        print(f"Warning: Could not clear webhook: {e}")
+    
     bot.run()
 
 if __name__ == "__main__":
