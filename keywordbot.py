@@ -65,9 +65,9 @@ class TopicKeywordBot:
 🤖 <b>Topic Keyword Filter Bot Commands:</b>
 
 <b>For Admins:</b>
-• /add_keyword &lt;topic_id&gt; &lt;keyword&gt; - Add a keyword to filter in a topic
-• /remove_keyword &lt;topic_id&gt; &lt;keyword&gt; - Remove a keyword from a topic
-• /list_keywords [topic_id] - List keywords (all or specific topic)
+• /add_keyword &lt;topic_id&gt; &lt;keyword&gt; - Add a keyword to filter (use 0 for general chat)
+• /remove_keyword &lt;topic_id&gt; &lt;keyword&gt; - Remove a keyword (use 0 for general chat)
+• /list_keywords [topic_id] - List keywords (all or specific topic/chat)
 • /add_admin &lt;user_id&gt; - Add a user as bot admin
 • /forceaddadmin &lt;user_id&gt; - Forcefully add admin (restricted access)
 • /list_admins - Show all bot admins
@@ -83,7 +83,8 @@ class TopicKeywordBot:
 <b>Notes:</b>
 • Bot must be admin with delete and restrict permissions
 • Keywords are case-insensitive
-• Use topic_id from Telegram topic URL
+• Use topic_id 0 for general chat, actual topic ID for topics
+• Get topic ID from Telegram topic URL
         """
         await update.message.reply_text(help_text, parse_mode="HTML")
 
@@ -106,7 +107,7 @@ class TopicKeywordBot:
             return
 
         if len(context.args) < 2:
-            await update.message.reply_text("❌ Usage: /add_keyword <topic_id> <keyword>")
+            await update.message.reply_text("❌ Usage: /add_keyword <topic_id> <keyword>\nUse topic_id 0 for general chat, or actual topic ID for topics")
             return
 
         try:
@@ -120,7 +121,9 @@ class TopicKeywordBot:
             if keyword not in self.config["topic_keywords"][chat_id][str(topic_id)]:
                 self.config["topic_keywords"][chat_id][str(topic_id)].append(keyword)
                 self.save_config()
-                await update.message.reply_text(f"✅ Added keyword '{keyword}' to topic {topic_id}.")
+                
+                location = "general chat" if topic_id == 0 else f"topic {topic_id}"
+                await update.message.reply_text(f"✅ Added keyword '{keyword}' to {location}.")
             else:
                 await update.message.reply_text(f"⚠️ Keyword '{keyword}' already exists.")
         except ValueError:
@@ -132,7 +135,7 @@ class TopicKeywordBot:
             return
 
         if len(context.args) < 2:
-            await update.message.reply_text("❌ Usage: /remove_keyword <topic_id> <keyword>")
+            await update.message.reply_text("❌ Usage: /remove_keyword <topic_id> <keyword>\nUse topic_id 0 for general chat, or actual topic ID for topics")
             return
 
         try:
@@ -146,9 +149,12 @@ class TopicKeywordBot:
                 
                 self.config["topic_keywords"][chat_id][str(topic_id)].remove(keyword)
                 self.save_config()
-                await update.message.reply_text(f"✅ Removed keyword '{keyword}' from topic {topic_id}.")
+                
+                location = "general chat" if topic_id == 0 else f"topic {topic_id}"
+                await update.message.reply_text(f"✅ Removed keyword '{keyword}' from {location}.")
             else:
-                await update.message.reply_text(f"❌ Keyword '{keyword}' not found in topic {topic_id}.")
+                location = "general chat" if topic_id == 0 else f"topic {topic_id}"
+                await update.message.reply_text(f"❌ Keyword '{keyword}' not found in {location}.")
         except ValueError:
             await update.message.reply_text("❌ Topic ID must be a number.")
 
@@ -179,7 +185,8 @@ class TopicKeywordBot:
             for topic_id, keywords in self.config["topic_keywords"][chat_id].items():
                 if keywords:
                     keyword_list = ", ".join(keywords)
-                    response += f"<b>Topic {topic_id}:</b> {keyword_list}\n"
+                    location = "General Chat" if topic_id == "0" else f"Topic {topic_id}"
+                    response += f"<b>{location}:</b> {keyword_list}\n"
             
             if response == "🔍 <b>All Keywords:</b>\n\n":
                 response = "❌ No keywords configured."
@@ -389,14 +396,14 @@ class TopicKeywordBot:
         message_thread_id = update.message.message_thread_id
         user_id = update.effective_user.id
         
-        if not message_thread_id:
-            return  # Not in a topic
-
-        # Check if this topic has keywords to filter
-        topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(str(message_thread_id), [])
+        # Determine the topic ID (0 for general chat, actual ID for topics)
+        topic_id = "0" if message_thread_id is None else str(message_thread_id)
+        
+        # Check if this topic/chat has keywords to filter
+        topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
         
         if not topic_keywords:
-            return  # No keywords configured for this topic
+            return  # No keywords configured for this topic/chat
 
         message_text = update.message.text.lower()
         
@@ -414,13 +421,15 @@ class TopicKeywordBot:
                     is_bot_admin = self.is_bot_admin(user_id)
                     is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
                     
+                    location = "general chat" if topic_id == "0" else f"topic {topic_id}"
+                    
                     if is_bot_admin or is_tg_admin:
                         # Only delete message for admins, no mute
-                        logger.info(f"Deleted admin message containing keyword '{keyword}' in topic {message_thread_id}")
+                        logger.info(f"Deleted admin message containing keyword '{keyword}' in {location}")
                     else:
                         # Mute regular users
                         await self.mute_user(update.effective_chat.id, user_id, keyword, context)
-                        logger.info(f"Deleted and muted user {user_id} for keyword '{keyword}' in topic {message_thread_id}")
+                        logger.info(f"Deleted and muted user {user_id} for keyword '{keyword}' in {location}")
                     
                     return
                     
