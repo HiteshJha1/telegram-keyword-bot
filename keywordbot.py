@@ -451,54 +451,54 @@ class TopicKeywordBot:
             await update.message.reply_text("✅ No users are currently muted.")
 
     async def mute_user(self, chat_id: int, user_id: int, keyword: str, context: ContextTypes.DEFAULT_TYPE):
-    """Mute a user for 12 hours"""
-    try:
-        # Calculate unmute time (12 hours)
-        unmute_time = datetime.now() + timedelta(hours=12)
-        
-        # Mute the user with restricted permissions
-        await context.bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions=ChatPermissions(
-                can_send_messages=False,
-                can_send_media_messages=False,
-                can_send_polls=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-                can_change_info=False,
-                can_invite_users=False,
-                can_pin_messages=False,
-                can_manage_topics=False
-            ),
-            until_date=unmute_time
-        )
-        
-        # Store mute info
-        mute_key = f"{chat_id}_{user_id}"
-        self.config.setdefault("muted_users", {})[mute_key] = unmute_time.isoformat()
-        self.save_config()
-        
-        # Send notification with user mention
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"🔇 User <a href='tg://user?id={user_id}'>{user_id}</a> was muted for 12 hours for using a restricted keyword in this topic.",
-            parse_mode="HTML"
-        )
-        
-        logger.info(f"Successfully muted user {user_id} for keyword '{keyword}' until {unmute_time}")
-        
-    except (BadRequest, Forbidden) as e:
-        logger.error(f"Failed to mute user {user_id}: {e}")
-        # Try to send a notification about the failed mute
+        """Mute a user for 12 hours"""
         try:
+            # Calculate unmute time (12 hours)
+            unmute_time = datetime.now() + timedelta(hours=12)
+            
+            # Mute the user with restricted permissions
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions=ChatPermissions(
+                    can_send_messages=False,
+                    can_send_media_messages=False,
+                    can_send_polls=False,
+                    can_send_other_messages=False,
+                    can_add_web_page_previews=False,
+                    can_change_info=False,
+                    can_invite_users=False,
+                    can_pin_messages=False,
+                    can_manage_topics=False
+                ),
+                until_date=unmute_time
+            )
+            
+            # Store mute info
+            mute_key = f"{chat_id}_{user_id}"
+            self.config.setdefault("muted_users", {})[mute_key] = unmute_time.isoformat()
+            self.save_config()
+            
+            # Send notification with user mention
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ Could not mute user <a href='tg://user?id={user_id}'>{user_id}</a> due to insufficient permissions. Please ensure bot has 'Restrict Members' permission.",
+                text=f"🔇 User <a href='tg://user?id={user_id}'>{user_id}</a> was muted for 12 hours for using a restricted keyword in this topic.",
                 parse_mode="HTML"
             )
-        except:
-            pass
+            
+            logger.info(f"Successfully muted user {user_id} for keyword '{keyword}' until {unmute_time}")
+            
+        except (BadRequest, Forbidden) as e:
+            logger.error(f"Failed to mute user {user_id}: {e}")
+            # Try to send a notification about the failed mute
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ Could not mute user <a href='tg://user?id={user_id}'>{user_id}</a> due to insufficient permissions. Please ensure bot has 'Restrict Members' permission.",
+                    parse_mode="HTML"
+                )
+            except:
+                pass
 
     async def filter_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
