@@ -555,76 +555,71 @@ class TopicKeywordBot:
         except Exception as e:
             logger.warning(f"Could not delete message {message_id}: {e}")
 
- async def filter_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
+    async def filter_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.message or not update.message.text:
+            return
 
-    chat_id = str(update.effective_chat.id)
-    message_thread_id = update.message.message_thread_id
-    user_id = update.effective_user.id
-    message_id = update.message.message_id
-    message_text = update.message.text.lower()
+        chat_id = str(update.effective_chat.id)
+        message_thread_id = update.message.message_thread_id
+        user_id = update.effective_user.id
+        message_id = update.message.message_id
+        message_text = update.message.text.lower()
 
-    # ============================
-    # Block replies to flagged messages
-    # ============================
-    if update.message.reply_to_message:
-        replied_message_id = update.message.reply_to_message.message_id
-        flagged_key = f"{chat_id}_{replied_message_id}"
+        # ============================
+        # Block replies to flagged messages
+        # ============================
+        if update.message.reply_to_message:
+            replied_message_id = update.message.reply_to_message.message_id
+            flagged_key = f"{chat_id}_{replied_message_id}"
 
-        if flagged_key in self.config.get("flagged_messages", {}):
-            try:
-                # First delete the flagged (original) message
-                await context.bot.delete_message(chat_id=chat_id, message_id=replied_message_id)
-                logger.info(f"Deleted flagged message {replied_message_id} before its reply")
+            if flagged_key in self.config.get("flagged_messages", {}):
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=replied_message_id)
+                    logger.info(f"Deleted flagged message {replied_message_id} before its reply")
 
-                # Then delete the user's reply to that message
-                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-                logger.info(f"Deleted reply {message_id} to flagged message from user {user_id}")
-            except Exception as e:
-                logger.warning(f"Failed to delete flagged or reply message: {e}")
-            return  # Stop further processing
-
-    # ============================
-    # Determine topic/thread ID
-    # ============================
-    if update.effective_chat.type == 'supergroup':
-        topic_id = str(message_thread_id) if message_thread_id else "1"
-    else:
-        topic_id = "0" if message_thread_id is None else str(message_thread_id)
-
-    logger.debug(f"Processing message in chat {chat_id} (type: {update.effective_chat.type}), topic {topic_id}, from user {user_id}")
-
-    # ============================
-    # Get keywords for this topic
-    # ============================
-    topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
-    if not topic_keywords:
-        return
-
-    # ============================
-    # Check message for filtered keywords
-    # ============================
-    for keyword in topic_keywords:
-        if keyword in message_text:
-            logger.info(f"Keyword '{keyword}' found in message from user {user_id}")
-
-            # Check if user is admin (bot or Telegram)
-            is_bot_admin = self.is_bot_admin(user_id)
-            is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
-
-            if is_bot_admin or is_tg_admin:
-                logger.info(f"Admin {user_id} used prohibited keyword '{keyword}' - no action taken")
+                    await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+                    logger.info(f"Deleted reply {message_id} to flagged message from user {user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete flagged or reply message: {e}")
                 return
 
-            # ============================
-            # Regular user: delete, mute, and flag message
-            # ============================
-            await self.mute_user(update.effective_chat.id, user_id, keyword, context)
-            logger.info(f"User {user_id} muted for keyword '{keyword}'")
+        # ============================
+        # Determine topic/thread ID
+        # ============================
+        if update.effective_chat.type == 'supergroup':
+            topic_id = str(message_thread_id) if message_thread_id else "1"
+        else:
+            topic_id = "0" if message_thread_id is None else str(message_thread_id)
 
-            await self.delete_message_and_replies(update.effective_chat.id, message_id, context)
+        logger.debug(f"Processing message in chat {chat_id} (type: {update.effective_chat.type}), topic {topic_id}, from user {user_id}")
+
+        # ============================
+        # Get keywords for this topic
+        # ============================
+        topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
+        if not topic_keywords:
             return
+
+        # ============================
+        # Check message for filtered keywords
+        # ============================
+        for keyword in topic_keywords:
+            if keyword in message_text:
+                logger.info(f"Keyword '{keyword}' found in message from user {user_id}")
+
+                is_bot_admin = self.is_bot_admin(user_id)
+                is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
+
+                if is_bot_admin or is_tg_admin:
+                    logger.info(f"Admin {user_id} used prohibited keyword '{keyword}' - no action taken")
+                    return
+
+                await self.mute_user(update.effective_chat.id, user_id, keyword, context)
+                logger.info(f"User {user_id} muted for keyword '{keyword}'")
+
+                await self.delete_message_and_replies(update.effective_chat.id, message_id, context)
+                return
+
 
     async def test_token(self):
         """Test if the bot token is valid"""
