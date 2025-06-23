@@ -30,7 +30,8 @@ class TopicKeywordBot:
             self.config = {
                 "topic_keywords": {},
                 "admin_users": [],
-                "muted_users": {}
+                "muted_users": {},
+                "flagged_messages": {}  # New: Store flagged message IDs to track replies
             }
             self.save_config()
 
@@ -52,8 +53,19 @@ class TopicKeywordBot:
         self.app.add_handler(CommandHandler("check_mutes", self.check_mutes_command))
         self.app.add_handler(CommandHandler("debug", self.debug_command))
         self.app.add_handler(CommandHandler("test_permissions", self.test_permissions_command))
+        self.app.add_handler(CommandHandler("clear_flagged", self.clear_flagged_command))
         # Message filter handler - highest priority
         self.app.add_handler(MessageHandler(filters.TEXT, self.filter_message), group=0)
+
+    async def clear_flagged_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Clear flagged messages list"""
+        if not self.is_bot_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Only bot admins can clear flagged messages.")
+            return
+
+        self.config["flagged_messages"] = {}
+        self.save_config()
+        await update.message.reply_text("✅ Cleared all flagged messages from tracking.")
 
     async def test_permissions_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Test bot permissions in current chat"""
@@ -69,6 +81,7 @@ class TopicKeywordBot:
 
 <b>Status:</b> {bot_member.status}
 <b>Can Restrict Members:</b> {getattr(bot_member, 'can_restrict_members', 'Unknown')}
+<b>Can Delete Messages:</b> {getattr(bot_member, 'can_delete_messages', 'Unknown')}
 <b>Can Manage Topics:</b> {getattr(bot_member, 'can_manage_topics', 'Unknown')}
 
 <b>Chat Type:</b> {update.effective_chat.type}
@@ -105,15 +118,17 @@ class TopicKeywordBot:
 • /check_mutes - Check currently muted users
 • /debug - Show debug information about current chat
 • /test_permissions - Test bot permissions
+• /clear_flagged - Clear flagged messages tracking
 
 <b>Features:</b>
 • Regular users get muted for 12 hours when using filtered keywords
 • Bot admins: no restrictions applied
 • Telegram admins: no restrictions applied
 • Automatic unmuting after 12 hours
+• Deletes original message AND all replies to it
 
 <b>Notes:</b>
-• Bot must be admin with restrict permissions
+• Bot must be admin with restrict and delete permissions
 • Keywords are case-insensitive
 • For supergroups with topics: use topic ID from URL or /debug
 • For general chat in supergroups: often topic ID 1 or use /debug to confirm
@@ -139,11 +154,16 @@ class TopicKeywordBot:
         try:
             bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
             can_restrict = getattr(bot_member, 'can_restrict_members', False)
+            can_delete = getattr(bot_member, 'can_delete_messages', False)
             bot_status = bot_member.status
         except Exception as e:
             can_restrict = "Error checking"
+            can_delete = "Error checking"
             bot_status = "Unknown"
             logger.error(f"Error checking bot permissions: {e}")
+
+        # Count flagged messages
+        flagged_count = len(self.config.get("flagged_messages", {}))
 
         debug_info = f"""
 🔍 <b>Debug Information:</b>
@@ -157,6 +177,10 @@ class TopicKeywordBot:
 <b>Bot Status:</b>
 • Status: {bot_status}
 • Can Restrict Users: {can_restrict}
+• Can Delete Messages: {can_delete}
+
+<b>Tracking:</b>
+• Flagged Messages: {flagged_count}
 
 <b>Keywords for this location:</b>
         """
@@ -511,6 +535,26 @@ class TopicKeywordBot:
             except:
                 pass
 
+    async def delete_message_and_replies(self, chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE):
+        """Delete a message and track it for reply deletion"""
+        try:
+            # Delete the original message
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            
+            # Store this message ID as flagged for reply tracking
+            flagged_key = f"{chat_id}_{message_id}"
+            self.config.setdefault("flagged_messages", {})[flagged_key] = {
+                "timestamp": datetime.now().isoformat(),
+                "chat_id": chat_id,
+                "message_id": message_id
+            }
+            self.save_config()
+            
+            logger.info(f"Deleted message {message_id} in chat {chat_id} and flagged for reply tracking")
+            
+        except Exception as e:
+            logger.warning(f"Could not delete message {message_id}: {e}")
+
     async def filter_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
             return
@@ -518,6 +562,21 @@ class TopicKeywordBot:
         chat_id = str(update.effective_chat.id)
         message_thread_id = update.message.message_thread_id
         user_id = update.effective_user.id
+        message_id = update.message.message_id
+        
+        # Check if this message is a reply to a flagged message
+        if update.message.reply_to_message:
+            replied_message_id = update.message.reply_to_message.message_id
+            flagged_key = f"{chat_id}_{replied_message_id}"
+            
+            if flagged_key in self.config.get("flagged_messages", {}):
+                # This is a reply to a flagged message - delete it
+                try:
+                    await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=message_id)
+                    logger.info(f"Deleted reply message {message_id} from user {user_id} (replied to flagged message {replied_message_id})")
+                except Exception as e:
+                    logger.warning(f"Could not delete reply message {message_id}: {e}")
+                return
         
         # Determine the topic ID based on chat type
         if update.effective_chat.type == 'supergroup':
@@ -549,20 +608,12 @@ class TopicKeywordBot:
                     logger.info(f"Admin {user_id} used prohibited keyword '{keyword}' - no action taken")
                     return
                 else:
-                    # Regular users: just mute (don't delete message)
+                    # Regular users: mute and delete message + track for replies
                     await self.mute_user(update.effective_chat.id, user_id, keyword, context)
                     logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
-                    # Delete the triggering message
-                    try:
-                        await context.bot.delete_message(
-                            chat_id=update.effective_chat.id,
-                            message_id=update.message.message_id
-                        )
-                    except Exception as e:
-                        logger.warning(f"Could not delete original message: {e}")
-
-                    # Note: The chat history deletion code was removed as it used an invalid method
-                    # Telegram Bot API doesn't have get_chat_history method
+                    
+                    # Delete the triggering message and flag it for reply tracking
+                    await self.delete_message_and_replies(update.effective_chat.id, message_id, context)
                     return
 
     async def test_token(self):
@@ -582,7 +633,7 @@ class TopicKeywordBot:
         """Run the bot with proper error handling"""
         try:
             print("🚀 Starting bot...")
-            # Test token before running
+            # Test token
             asyncio.get_event_loop().run_until_complete(self.test_token())
             
             # Clear any pending updates and conflicts
