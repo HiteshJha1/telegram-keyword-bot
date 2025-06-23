@@ -68,7 +68,6 @@ class TopicKeywordBot:
 🔍 <b>Bot Permissions Test:</b>
 
 <b>Status:</b> {bot_member.status}
-<b>Can Delete Messages:</b> {getattr(bot_member, 'can_delete_messages', 'Unknown')}
 <b>Can Restrict Members:</b> {getattr(bot_member, 'can_restrict_members', 'Unknown')}
 <b>Can Manage Topics:</b> {getattr(bot_member, 'can_manage_topics', 'Unknown')}
 
@@ -85,7 +84,7 @@ class TopicKeywordBot:
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🤖 <b>Topic Keyword Filter Bot</b>\n\n"
-            "I can delete messages containing specific keywords and mute users in designated topics!\n\n"
+            "I can mute users for using specific keywords in designated topics!\n\n"
             "Use /help to see available commands.",
             parse_mode="HTML"
         )
@@ -108,13 +107,13 @@ class TopicKeywordBot:
 • /test_permissions - Test bot permissions
 
 <b>Features:</b>
-• Regular users get muted for 6 hours when using filtered keywords
-• Bot admins: no restrictions applied (messages not deleted)
-• Telegram admins: messages deleted silently (no notifications)
-• Automatic unmuting after 6 hours
+• Regular users get muted for 12 hours when using filtered keywords
+• Bot admins: no restrictions applied
+• Telegram admins: no restrictions applied
+• Automatic unmuting after 12 hours
 
 <b>Notes:</b>
-• Bot must be admin with delete and restrict permissions
+• Bot must be admin with restrict permissions
 • Keywords are case-insensitive
 • For supergroups with topics: use topic ID from URL or /debug
 • For general chat in supergroups: often topic ID 1 or use /debug to confirm
@@ -139,11 +138,9 @@ class TopicKeywordBot:
         # Check bot permissions
         try:
             bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
-            can_delete = getattr(bot_member, 'can_delete_messages', False)
             can_restrict = getattr(bot_member, 'can_restrict_members', False)
             bot_status = bot_member.status
         except Exception as e:
-            can_delete = "Error checking"
             can_restrict = "Error checking"
             bot_status = "Unknown"
             logger.error(f"Error checking bot permissions: {e}")
@@ -159,7 +156,6 @@ class TopicKeywordBot:
 
 <b>Bot Status:</b>
 • Status: {bot_status}
-• Can Delete Messages: {can_delete}
 • Can Restrict Users: {can_restrict}
 
 <b>Keywords for this location:</b>
@@ -200,7 +196,7 @@ class TopicKeywordBot:
             return
 
         try:
-            topic_id = context.args[0]  # Keep as string to handle both numeric and non-numeric IDs
+            topic_id = context.args[0]
             keyword = " ".join(context.args[1:]).lower()
             chat_id = str(update.effective_chat.id)
 
@@ -455,54 +451,54 @@ class TopicKeywordBot:
             await update.message.reply_text("✅ No users are currently muted.")
 
     async def mute_user(self, chat_id: int, user_id: int, keyword: str, context: ContextTypes.DEFAULT_TYPE):
-        """Mute a user for 6 hours"""
+    """Mute a user for 12 hours"""
+    try:
+        # Calculate unmute time (12 hours)
+        unmute_time = datetime.now() + timedelta(hours=12)
+        
+        # Mute the user with restricted permissions
+        await context.bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            permissions=ChatPermissions(
+                can_send_messages=False,
+                can_send_media_messages=False,
+                can_send_polls=False,
+                can_send_other_messages=False,
+                can_add_web_page_previews=False,
+                can_change_info=False,
+                can_invite_users=False,
+                can_pin_messages=False,
+                can_manage_topics=False
+            ),
+            until_date=unmute_time
+        )
+        
+        # Store mute info
+        mute_key = f"{chat_id}_{user_id}"
+        self.config.setdefault("muted_users", {})[mute_key] = unmute_time.isoformat()
+        self.save_config()
+        
+        # Send notification with user mention
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🔇 User <a href='tg://user?id={user_id}'>{user_id}</a> was muted for 12 hours for using a restricted keyword in this topic.",
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"Successfully muted user {user_id} for keyword '{keyword}' until {unmute_time}")
+        
+    except (BadRequest, Forbidden) as e:
+        logger.error(f"Failed to mute user {user_id}: {e}")
+        # Try to send a notification about the failed mute
         try:
-            # Calculate unmute time
-            unmute_time = datetime.now() + timedelta(hours=6)
-            
-            # Mute the user with restricted permissions
-            await context.bot.restrict_chat_member(
-                chat_id=chat_id,
-                user_id=user_id,
-                permissions=ChatPermissions(
-                    can_send_messages=False,
-                    can_send_media_messages=False,
-                    can_send_polls=False,
-                    can_send_other_messages=False,
-                    can_add_web_page_previews=False,
-                    can_change_info=False,
-                    can_invite_users=False,
-                    can_pin_messages=False,
-                    can_manage_topics=False
-                ),
-                until_date=unmute_time
-            )
-            
-            # Store mute info
-            mute_key = f"{chat_id}_{user_id}"
-            self.config.setdefault("muted_users", {})[mute_key] = unmute_time.isoformat()
-            self.save_config()
-            
-            # Send notification with user mention and specific keyword
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"🔇 <a href='tg://user?id={user_id}'>User</a> has been muted for 6 hours for using prohibited keyword: <b>{keyword}</b>",
+                text=f"⚠️ Could not mute user <a href='tg://user?id={user_id}'>{user_id}</a> due to insufficient permissions. Please ensure bot has 'Restrict Members' permission.",
                 parse_mode="HTML"
             )
-            
-            logger.info(f"Successfully muted user {user_id} for keyword '{keyword}' until {unmute_time}")
-            
-        except (BadRequest, Forbidden) as e:
-            logger.error(f"Failed to mute user {user_id}: {e}")
-            # Try to send a notification about the failed mute
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ Could not mute user due to insufficient permissions. Please ensure bot has 'Restrict Members' permission.",
-                    parse_mode="HTML"
-                )
-            except:
-                pass
+        except:
+            pass
 
     async def filter_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
@@ -514,12 +510,8 @@ class TopicKeywordBot:
         
         # Determine the topic ID based on chat type
         if update.effective_chat.type == 'supergroup':
-            # For supergroups with topics, general chat usually has thread_id = 1
-            # If message_thread_id is None, it might be general chat (topic 1)
-            # If message_thread_id has a value, it's a specific topic
             topic_id = str(message_thread_id) if message_thread_id else "1"
         else:
-            # For regular groups
             topic_id = "0" if message_thread_id is None else str(message_thread_id)
         
         logger.debug(f"Processing message in chat {chat_id} (type: {update.effective_chat.type}), topic {topic_id}, from user {user_id}")
@@ -527,14 +519,10 @@ class TopicKeywordBot:
         # Check if this topic/chat has keywords to filter
         topic_keywords = self.config["topic_keywords"].get(chat_id, {}).get(topic_id, [])
         
-        logger.debug(f"Keywords for topic {topic_id}: {topic_keywords}")
-        
         if not topic_keywords:
-            logger.debug("No keywords configured for this location")
             return
 
         message_text = update.message.text.lower()
-        logger.debug(f"Checking message: '{message_text}'")
         
         # Check if message contains any filtered keywords
         for keyword in topic_keywords:
@@ -545,50 +533,15 @@ class TopicKeywordBot:
                 is_bot_admin = self.is_bot_admin(user_id)
                 is_tg_admin = await self.is_telegram_admin(user_id, update.effective_chat.id)
                 
-                if is_bot_admin:
-                    # Bot admins: no restrictions applied (don't delete message, don't mute, no notification)
-                    logger.info(f"Bot admin {user_id} used prohibited keyword '{keyword}' - no action taken")
+                if is_bot_admin or is_tg_admin:
+                    # Bot admins and Telegram admins: no restrictions applied
+                    logger.info(f"Admin {user_id} used prohibited keyword '{keyword}' - no action taken")
                     return
-                elif is_tg_admin:
-                    # Telegram admins: delete message silently (no notification, no mute)
-                    logger.info(f"Telegram admin {user_id} used prohibited keyword '{keyword}' - deleting message silently")
-                    try:
-                        await context.bot.delete_message(
-                            chat_id=update.effective_chat.id,
-                            message_id=update.message.message_id
-                        )
-                        logger.info(f"Successfully deleted Telegram admin message containing keyword '{keyword}'")
-                        return
-                    except (BadRequest, Forbidden) as e:
-                        logger.error(f"Failed to delete Telegram admin message: {e}")
-                        return
                 else:
-                    # Regular users: delete message and mute with notification
-                    try:
-                        await context.bot.delete_message(
-                            chat_id=update.effective_chat.id,
-                            message_id=update.message.message_id
-                        )
-                        logger.info(f"Successfully deleted message containing keyword '{keyword}'")
-                        
-                        # Mute regular users
-                        await self.mute_user(update.effective_chat.id, user_id, keyword, context)
-                        logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
-                        
-                        return
-                        
-                    except (BadRequest, Forbidden) as e:
-                        logger.error(f"Failed to delete message: {e}")
-                        # Send a warning about insufficient permissions
-                        try:
-                            await context.bot.send_message(
-                                chat_id=update.effective_chat.id,
-                                text=f"⚠️ Detected prohibited keyword but couldn't delete message. Please ensure bot has 'Delete Messages' permission.",
-                                parse_mode="HTML"
-                            )
-                        except:
-                            pass
-                        return
+                    # Regular users: just mute (don't delete message)
+                    await self.mute_user(update.effective_chat.id, user_id, keyword, context)
+                    logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
+                    return
 
     async def test_token(self):
         """Test if the bot token is valid"""
@@ -623,14 +576,6 @@ class TopicKeywordBot:
         except Exception as e:
             logger.error(f"Error running bot: {e}")
             print(f"❌ Error running bot: {e}")
-            
-    async def clear_webhook(self):
-        """Clear any existing webhook to avoid conflicts"""
-        try:
-            await self.app.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Cleared existing webhook")
-        except Exception as e:
-            logger.error(f"Error clearing webhook: {e}")
 
 def main():
     # Get token from environment variable or input
