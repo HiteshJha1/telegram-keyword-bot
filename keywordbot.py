@@ -197,30 +197,30 @@ class TopicKeywordBot:
 
         try:
             topic_id = context.args[0]
-keywords = [kw.lower() for kw in context.args[1:]]
-chat_id = str(update.effective_chat.id)
+            keywords = [kw.lower() for kw in context.args[1:]]
+            chat_id = str(update.effective_chat.id)
 
-self.config["topic_keywords"].setdefault(chat_id, {})
-self.config["topic_keywords"][chat_id].setdefault(topic_id, [])
+            self.config["topic_keywords"].setdefault(chat_id, {})
+            self.config["topic_keywords"][chat_id].setdefault(topic_id, [])
 
-added = []
-skipped = []
+            added = []
+            skipped = []
 
-for kw in keywords:
-    if kw not in self.config["topic_keywords"][chat_id][topic_id]:
-        self.config["topic_keywords"][chat_id][topic_id].append(kw)
-        added.append(kw)
-    else:
-        skipped.append(kw)
+            for kw in keywords:
+                if kw not in self.config["topic_keywords"][chat_id][topic_id]:
+                    self.config["topic_keywords"][chat_id][topic_id].append(kw)
+                    added.append(kw)
+                else:
+                    skipped.append(kw)
 
-self.save_config()
+            self.save_config()
 
-response = ""
-if added:
-    response += f"✅ Added: {', '.join(added)}\n"
-if skipped:
-    response += f"⚠️ Already existed: {', '.join(skipped)}"
-await update.message.reply_text(response.strip())
+            response = ""
+            if added:
+                response += f"✅ Added: {', '.join(added)}\n"
+            if skipped:
+                response += f"⚠️ Already existed: {', '.join(skipped)}"
+            await update.message.reply_text(response.strip())
 
         except Exception as e:
             await update.message.reply_text(f"❌ Error adding keyword: {e}")
@@ -553,25 +553,16 @@ await update.message.reply_text(response.strip())
                     await self.mute_user(update.effective_chat.id, user_id, keyword, context)
                     logger.info(f"Regular user {user_id} muted for keyword '{keyword}'")
                     # Delete the triggering message
-try:
-    await context.bot.delete_message(
-        chat_id=update.effective_chat.id,
-        message_id=update.message.message_id
-    )
-except Exception as e:
-    logger.warning(f"Could not delete original message: {e}")
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=update.effective_chat.id,
+                            message_id=update.message.message_id
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not delete original message: {e}")
 
-# Attempt to delete replies to that message
-try:
-    async for msg in context.bot.get_chat_history(chat_id=update.effective_chat.id, limit=100):
-        if msg.reply_to_message and msg.reply_to_message.message_id == update.message.message_id:
-            try:
-                await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg.message_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete reply message {msg.message_id}: {e}")
-except Exception as e:
-    logger.warning(f"Could not fetch chat history to delete replies: {e}")
-
+                    # Note: The chat history deletion code was removed as it used an invalid method
+                    # Telegram Bot API doesn't have get_chat_history method
                     return
 
     async def test_token(self):
